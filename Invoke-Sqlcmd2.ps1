@@ -160,7 +160,9 @@
         v1.6.1       - Shiyang Qiu           - Fixed the verbose option and SQL error handling conflict 
         v1.6.2       - Shiyang Qiu           - Fixed the .DESCRIPTION.
                                              - Fixed the non SQL error handling and added Finally Block to close connection.
-
+        v1.6.3       - Jefferson Elias       - Added a parameter called "OutputFile" to allow to output "PRINT" results to a file
+                                             - Fixed an issue when calling Invoke-SQLCmd2 multiple times with -Verbose option
+                                               (added a call to remove_InfoMessage)
     .LINK
         https://github.com/RamblingCookieMonster/PowerShell
 
@@ -312,7 +314,26 @@
         [Alias( 'Connection', 'Conn' )]
         [ValidateNotNullOrEmpty()]
         [System.Data.SqlClient.SQLConnection]
-        $SQLConnection
+        $SQLConnection,
+        [Parameter( ParameterSetName='Ins-Fil',
+                    Position=11,
+                    Mandatory=$false,
+                    ValueFromPipelineByPropertyName=$true,
+                    ValueFromRemainingArguments=$false )]
+        [Parameter( ParameterSetName = 'Con-Que',
+                    Position=11,
+                    Mandatory=$false,
+                    ValueFromPipeline=$false,
+                    ValueFromPipelineByPropertyName=$false,
+                    ValueFromRemainingArguments=$false )]                    
+        [Parameter( ParameterSetName='Con-Fil',
+                    Position=11,
+                    Mandatory=$false,
+                    ValueFromPipelineByPropertyName=$true,
+                    ValueFromRemainingArguments=$false )]
+        [ValidateScript({ Test-Path $_ -IsValid })]
+        [string]
+        $OutputFile
     )
 
     Begin
@@ -414,6 +435,9 @@
     }
     Process
     {
+        $OutToFileHandler = $null
+        $VerboseHandler   = $null
+        
         foreach($SQLInstance in $ServerInstance)
         {
             Write-Verbose "Querying ServerInstance '$SQLInstance'"
@@ -448,12 +472,19 @@
                 }
             }
 
+            #Following EventHandler is used for PRINT and RAISERROR T-SQL statements. Executed when -OutputFile parameter specified
+            if($OutputFile -ne $null) {
+                $conn.FireInfoMessageEventOnUserErrors=$false # Shiyang, $true will change the SQL exception to information
+                $OutToFileHandler = [System.Data.SqlClient.SqlInfoMessageEventHandler] { Out-File -FilePath $OutputFile -InputObject "$($_)" -Append }
+                $conn.add_InfoMessage($OutToFileHandler)
+            }
+            
             #Following EventHandler is used for PRINT and RAISERROR T-SQL statements. Executed when -Verbose parameter specified by caller
             if ($PSBoundParameters.Verbose)
             {
                 $conn.FireInfoMessageEventOnUserErrors=$false # Shiyang, $true will change the SQL exception to information
-                $handler = [System.Data.SqlClient.SqlInfoMessageEventHandler] { Write-Verbose "$($_)" }
-                $conn.add_InfoMessage($handler)
+                $VerboseHandler = [System.Data.SqlClient.SqlInfoMessageEventHandler] { Write-Verbose "$($_)" }
+                $conn.add_InfoMessage($VerboseHandler)
             }
 
             $cmd = New-Object system.Data.SqlClient.SqlCommand($Query,$conn)
@@ -515,7 +546,17 @@
                 if(-not $PSBoundParameters.ContainsKey('SQLConnection'))
                 {
                     $conn.Close()
-                }               
+                }
+                
+                # Fix bug on multiple calls of Invoke-SQLCmd2
+                if($OutToFileHandler -ne $null) {
+                    $conn.remove_InfoMessage($OutToFileHandler)
+                }
+
+                if($VerboseHandler -ne $null) {
+                    $conn.remove_InfoMessage($VerboseHandler)
+                }    
+                # End bug fix
             }
 
             if($AppendServerInstance)
